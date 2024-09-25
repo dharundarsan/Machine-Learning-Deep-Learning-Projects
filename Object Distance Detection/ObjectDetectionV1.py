@@ -3,87 +3,75 @@ import numpy as np
 from ultralytics import YOLO
 
 # Initialize YOLO model
-model = YOLO('yolov8n.pt')  # Load YOLOv8 pretrained on COCO dataset
+model = YOLO('yolov8n.pt')  # YOLOv8 pretrained on COCO
 
 # Function to calculate distance from stereo images
-def find_dist(pt1, pt2, baseline, f_pixel):
-    x1, x2 = pt1[0], pt2[0]
-    disparity = x1 - x2
+def find_dist(pt1, pt2, baseline, focal_length_mm, alpha):
+    if pt1.size != 2 or pt2.size != 2:
+        raise ValueError("Points must be of shape (2,)")
 
-    # Check for zero disparity
+    x1, y1 = pt1
+    x2, y2 = pt2
+
+    disparity = x1 - x2
     if disparity == 0:
-        print("Warning: Disparity is zero; cannot calculate distance.")
-        return None, None, None
+        raise ValueError("Disparity cannot be zero for distance calculation.")
+
+    f_pixel = (640 * 0.5) / (np.tan(alpha * 0.5 * np.pi / 180))  # Assuming width is 640
 
     dist_z = (baseline * f_pixel) / disparity
-    dist_x = (x1 - (640 // 2)) * dist_z / f_pixel  # X-coordinate distance
-    dist_y = (pt1[1] - (480 // 2)) * dist_z / f_pixel  # Y-coordinate distance
-    
+    dist_x = (x1 - 640 // 2) * dist_z / f_pixel
+    dist_y = (y1 - 480 // 2) * dist_z / f_pixel  # Assuming height is 480
+
     return dist_x, dist_y, dist_z
 
-# Function to calculate IOU between two bounding boxes
-def calculate_iou(bbox_left, bbox_right):
-    # Extract coordinates for left and right bounding boxes
-    x1_left, y1_left, w1_left, h1_left = bbox_left
-    x1_right, y1_right, w1_right, h1_right = bbox_right
-    
-    # Calculate the (x, y) coordinates of the intersection rectangle
-    x_left = max(x1_left, x1_right)
-    y_top = max(y1_left, y1_right)
-    x_right = min(x1_left + w1_left, x1_right + w1_right)
-    y_bottom = min(y1_left + h1_left, y1_right + h1_right)
-    
-    # Compute the area of the intersection rectangle
-    intersection_area = max(0, x_right - x_left) * max(0, y_bottom - y_top)
-    
-    # Compute the area of both bounding boxes
-    area_left = w1_left * h1_left
-    area_right = w1_right * h1_right
-    
-    # Compute the Intersection Over Union (IOU)
-    iou = intersection_area / float(area_left + area_right - intersection_area)
-    return iou
+# Function to compare detected objects and find matches
+def compare_detections(det_left, det_right):
+    if len(det_left) == 0 or len(det_right) == 0:
+        return None
+
+    for left_box in det_left:
+        for right_box in det_right:
+            if (np.abs(left_box[0] - right_box[0]) < 30 and  # X-coordinate
+                np.abs(left_box[1] - right_box[1]) < 30):  # Y-coordinate
+                return left_box[:2], right_box[:2]  # Return the centers
+
+    return None
 
 # Function to detect cars and calculate distance
-def detect_and_calculate_distance(left_frame, right_frame, baseline, focal_length_mm, alpha, iou_threshold=0.5):
-    results_left = model(left_frame)  # Detect objects in left image
-    results_right = model(right_frame)  # Detect objects in right image
-    
-    # Extract detected car labels and coordinates from both frames
-    cars_left = results_left[0].boxes.xywh.cpu().numpy()
-    cars_right = results_right[0].boxes.xywh.cpu().numpy()
-    
-    # Get car class labels
-    labels_left = results_left[0].boxes.cls.cpu().numpy()
-    labels_right = results_right[0].boxes.cls.cpu().numpy()
-    
-    # Set to store detected car names (e.g., 0 for 'car')
-    detected_cars_left = {int(label) for label in labels_left if label == 0}
-    detected_cars_right = {int(label) for label in labels_right if label == 0}
+def detect_and_calculate_distance(left_frame, right_frame, baseline, focal_length_mm, alpha):
+    left_frame_resized = cv2.resize(left_frame, (640, 480))
+    right_frame_resized = cv2.resize(right_frame, (640, 480))
 
-    # Find intersection of detected cars in both frames
-    common_cars = detected_cars_left.intersection(detected_cars_right)
-    
-    distances = []
-    
-    for i, car_left in enumerate(cars_left):
-        if labels_left[i] in common_cars:
-            # Find corresponding car in the right image (based on IOU matching)
-            for j, car_right in enumerate(cars_right):
-                if labels_right[j] == labels_left[i]:  # Match based on label
-                    # Check if IOU of the car bounding boxes is greater than the threshold
-                    iou = calculate_iou(car_left, car_right)
-                    if iou > iou_threshold:
-                        f_pixel = (640 * 0.5) / (np.tan(alpha * 0.5 * np.pi / 180))  # Calculate focal length in pixels
-                        dist_x, dist_y, dist_z = find_dist(car_left, car_right, baseline, f_pixel)
-                        distances.append((labels_left[i], dist_x, dist_y, dist_z))
-                        break  # Exit inner loop after finding match
-    
-    return distances
+    results_left = model(left_frame_resized)
+    results_right = model(right_frame_resized)
 
-# Load stereo images (replace with actual images)
-left_frame = cv2.imread('D:\\mini project\\left3.png')
-right_frame = cv2.imread('D:\\mini project\\right3.png')
+    # Get the detected bounding boxes and class IDs
+    det_left = results_left[0].boxes.numpy()  # Use numpy() instead of cpu()
+    det_right = results_right[0].boxes.numpy()  # Use numpy() instead of cpu()
+
+    # Filter detections to only include cars (class ID 2)
+    det_left_cars = [box.xywh for box in det_left if int(box.cls) == 2]  # Filter cars
+    det_right_cars = [box.xywh for box in det_right if int(box.cls) == 2]  # Filter cars
+
+    # Ensure we are handling the car detections correctly
+    det_left_cars = np.array(det_left_cars)
+    det_right_cars = np.array(det_right_cars)
+
+    matched_cars = compare_detections(det_left_cars, det_right_cars)
+
+    if matched_cars is None:
+        print("No matching cars detected in both images.")
+        return None, None, None, results_left, results_right
+
+    car_left, car_right = matched_cars
+    dist_x, dist_y, dist_z = find_dist(car_left, car_right, baseline, focal_length_mm, alpha)
+
+    return dist_x, dist_y, dist_z, results_left, results_right
+
+# Load stereo images
+left_frame = cv2.imread('D:\\mini project\\Machine-Learning-Deep-Learning-Projects\\Object Distance Detection\\left2.jpg')
+right_frame = cv2.imread('D:\\mini project\\Machine-Learning-Deep-Learning-Projects\\Object Distance Detection\\right1.jpg')
 
 # Check if images are loaded properly
 if left_frame is None or right_frame is None:
@@ -91,17 +79,31 @@ if left_frame is None or right_frame is None:
 else:
     print("Images loaded successfully.")
 
-# Parameters for distance calculation
-baseline = 0.06  # Baseline distance between stereo cameras in meters
-focal_length_mm = 24  # Focal length of the camera in mm
+baseline = 0.064  # Baseline distance between stereo cameras in meters
+focal_length_mm = 3.6  # Focal length of the camera in mm
 alpha = 70  # Field of view of the camera in degrees
 
-# Calculate the distance of detected cars
-distances = detect_and_calculate_distance(left_frame, right_frame, baseline, focal_length_mm, alpha)
+# Calculate the distance of the detected car
+dist_x, dist_y, dist_z, results_left, results_right = detect_and_calculate_distance(left_frame, right_frame, baseline, focal_length_mm, alpha)
 
-# Print distances of detected cars
-if distances:
-    for label, dist_x, dist_y, dist_z in distances:
-        print(f"Detected car label: {label}, Distances -> X: {dist_x:.2f} m, Y: {dist_y:.2f} m, Z: {dist_z:.2f} m")
+if dist_x is not None and dist_y is not None and dist_z is not None:
+    print(f"Detected car distance: X = {dist_x:.2f} meters, Y = {dist_y:.2f} meters, Z = {dist_z:.2f} meters")
 else:
-    print("No common cars detected in both images.")
+    print("Distance calculation failed.")
+
+# Visualize detected bounding boxes
+for box in results_left[0].boxes.numpy():  # Updated to use numpy()
+    if int(box.cls) == 2:  # Check if the detected object is a car
+        x1, y1, x2, y2 = map(int, box.xyxy)
+        cv2.rectangle(left_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+for box in results_right[0].boxes.numpy():  # Updated to use numpy()
+    if int(box.cls) == 2:  # Check if the detected object is a car
+        x1, y1, x2, y2 = map(int, box.xyxy)
+        cv2.rectangle(right_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+# Show the frames with detected bounding boxes
+cv2.imshow("Left Frame", left_frame)
+cv2.imshow("Right Frame", right_frame)
+cv2.waitKey(0)
+cv2.destroyAllWindows()

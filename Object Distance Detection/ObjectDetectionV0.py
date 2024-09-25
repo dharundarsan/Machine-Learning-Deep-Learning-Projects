@@ -50,8 +50,8 @@ def detect_and_calculate_distance(left_frame, right_frame, baseline, focal_lengt
     return dist_x, dist_y, dist_z
 
 # Load stereo images (replace with actual images)
-left_frame = cv2.imread('D:\\mini project\\left1.jpg')
-right_frame = cv2.imread('D:\\mini project\\right1.jpg')
+left_frame = cv2.imread('D:\\mini project\\Machine-Learning-Deep-Learning-Projects\\Object Distance Detection\\left2.jpg')
+right_frame = cv2.imread('D:\\mini project\\Machine-Learning-Deep-Learning-Projects\\Object Distance Detection\\right1.jpg')
 
 # Check if images are loaded properly
 if left_frame is None or right_frame is None:
